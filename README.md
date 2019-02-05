@@ -9,3 +9,5 @@ https://github.com/eaplatanios/tensorflow_scala
 
 Adapted Akka Actor model to make it distributed (the most of code is Akka part).
 Akka Clustering will come later.
+
+Used techologies: Akka persistence, Akka FSM, Akka Router, Akka Untyped, Akka TestKit, Scala, Scala_tensorflow
