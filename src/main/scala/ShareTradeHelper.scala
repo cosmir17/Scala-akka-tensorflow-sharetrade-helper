@@ -1,13 +1,13 @@
 import java.time.LocalDate
 
 import SharePriceGetter.{RequestStockPrice, StockDataResponse}
-import TrainerRouterActor.{GetAvg, GetStd, Train}
+import TrainerRouterActor._
 import akka.actor.{ActorSystem, Props}
 import akka.pattern.{ask, pipe}
 import akka.util.Timeout
 
-import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
+import scala.concurrent.{Await, ExecutionContext, Future}
 
 object ShareTradeHelper extends App {
   val system = ActorSystem("ShareTradeHelperSystem")
@@ -22,13 +22,24 @@ object ShareTradeHelper extends App {
 
   val sharePriceGetter = system.actorOf(Props[SharePriceGetter], "Share-price-getter-actor")
   val stockPrices: Future[StockDataResponse] = (sharePriceGetter ? stockPriceListRequest).mapTo[StockDataResponse]
-  val trainerActor = system.actorOf(TrainerRouterActor.props(policyActor, budget, noOfStocks), "Trainer-parent-actor")
-  stockPrices.map(Train) pipeTo trainerActor //cluster distributed data
-  val avgFuture = (trainerActor ? GetAvg).mapTo[Double]
-  val stdFuture = (trainerActor ? GetStd).mapTo[Double]
+  val trainerRouterActor = system.actorOf(TrainerRouterActor.props(policyActor, budget, noOfStocks), "Trainer-parent-actor")
+  stockPrices.map(SendTrainingData) pipeTo trainerRouterActor
+  (0 until TrainerRouterActor.noOfChildren).foreach(_ => trainerRouterActor ! StartTraining)
+
+  (0 to 100).find(_ => { //This is not an web server and blocking is ok here, waiting until Tensorflow simulates final results.
+      Thread.sleep(1000)
+      Await.result[TrainerState]((trainerRouterActor ? IsEverythingDone).mapTo[TrainerState], 5 seconds) match {
+        case Completed => true
+        case _ => false
+      }})
+
+  val avgFuture = (trainerRouterActor ? GetAvg).mapTo[Double]
+  val stdFuture = (trainerRouterActor ? GetStd).mapTo[Double]
 
   for {
     avg <- avgFuture
     std <- stdFuture
   } yield println(s"avg is $avg, std is $std")
 }
+
+

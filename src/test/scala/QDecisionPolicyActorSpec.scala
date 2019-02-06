@@ -8,9 +8,7 @@ import org.scalatest.{BeforeAndAfterAll, OneInstancePerTest, WordSpecLike}
 class QDecisionPolicyActorSpec extends TestKit(ActorSystem("QDecisionPolicyActorSpec"))
   with ImplicitSender with WordSpecLike with BeforeAndAfterAll with OneInstancePerTest {
 
-  override def afterAll(): Unit = {
-    TestKit.shutdownActorSystem(system)
-  }
+  override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
 
   private val stateList = (55 until 255) ++ Seq(1000, 0)
   private val nextStateList = (55 until 255) ++ Seq(940, 1)
