@@ -4,9 +4,7 @@ import TrainerChildActor._
 import TrainerRouterActor._
 import akka.actor.{ActorRef, FSM}
 import akka.pattern.pipe
-import org.platanios.tensorflow.api.Tensor
-import org.platanios.tensorflow.api.core.Shape
-import org.platanios.tensorflow.api.tensors.ops.Basic.concatenate
+import org.platanios.tensorflow.api.{Tensor, tfi}
 
 import scala.collection.immutable
 import scala.concurrent.duration._
@@ -66,7 +64,6 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
       budgetNoOfStockShareVFolded.map(tuple => tuple._1 + tuple._2 * tuple._3)
   }
 
-
   /**
     * computing the final budget and stock shares (and handing over share value to next iteration)
     * updated values(budget, no of stock shares and share value) should be passed on to next iteration.
@@ -82,10 +79,8 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
     }) { //seed is budget, noStock, shareValue
       (budgetNoOfStockShareValueTupleFuture, i) =>
         println(s"progress ${100 * i / pricesIndexed.size - historyDim - 1}%")
-        val priceSliced = pricesIndexed.slice(i, i + historyDim)
-        val priceSlicedTensor = Tensor[Float](priceSliced).reshape(Shape(-1, priceSliced.size))
-        val currentState: Future[Tensor[Float]] = budgetNoOfStockShareValueTupleFuture
-          .map(budgetStocks => concatenate(Seq(priceSlicedTensor, budgetStocks._1.toFloat, budgetStocks._2.toFloat), null))
+        val currentState: Future[Tensor[Float]] = budgetNoOfStockShareValueTupleFuture.map(budgetStocks =>
+          tfi.stack(Seq(pricesIndexed.slice(i, i+historyDim + 1), budgetStocks._1.toFloat, budgetStocks._2.toFloat), axis=0))
         val currentPortfolio = budgetNoOfStockShareValueTupleFuture.map(tuple => tuple._1 + tuple._2 * tuple._3)
         val actionFuture = (currentState.map(cs => SelectionAction(cs, i.toFloat)) pipeTo policyActor).mapTo[Action]
         val newShareValue: Double = pricesIndexed(i + historyDim + 1)
@@ -95,8 +90,6 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
         createUpdateQ(currentState, rewardAndNewStateTuple) pipeTo policyActor
         newBudgetNoOfStockAction.map(tuple => (tuple._1, tuple._2, newShareValue))
     }
-
-
 
   /**
     * making decision of buying and selling shares or hold current position
@@ -131,9 +124,7 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
     } yield {
       val newPortfolio = newBudgetNoOfStockAction._1 + newBudgetNoOfStockAction._2 * newShareValue
       val reward = newPortfolio - currentPortfolio
-      val newPriceSliced = pricesIndexed.slice(i + 1, i + historyDim + 1)
-      val newPrices = Tensor[Float](newPriceSliced).reshape(Shape(-1, newPriceSliced.size))
-      val newState: Tensor[Float] = concatenate(Seq(newPrices, newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat), null)
+      val newState: Tensor[Float] = tfi.stack(Seq(pricesIndexed.slice(i + 1, i + historyDim + 2), newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat), axis=0)
       (reward, newState)
     }
 

@@ -1,4 +1,5 @@
 import java.time.LocalDate
+import java.time.chrono.ChronoLocalDate
 
 import QDecisionPolicyActor.{SelectionAction, Sell}
 import SharePriceGetter.StockDataResponse
@@ -16,10 +17,11 @@ import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Success
 
 class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec"))
-  with ImplicitSender with BeforeAndAfterAll with WordSpecLike with Matchers {
+  with WordSpecLike with Matchers with ImplicitSender with BeforeAndAfterAll {
 
   implicit val ex: ExecutionContext = system.dispatcher
   implicit val timeout: Timeout = Timeout(20 seconds)
+  implicit val localDateOrdering: Ordering[LocalDate] = Ordering.by(identity[ChronoLocalDate])
 
   private val sharePrices = (55 until 255).map(i => LocalDate.of(2001, 7, 10).plusDays(i) -> i.toDouble)
   private val stockData = StockDataResponse("my-share", TreeMap(sharePrices.toArray: _*))
@@ -31,7 +33,7 @@ class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec
   policyProbe.reply(Sell)
   assert(future.isCompleted && future.value == Some(Success(Sell)))
 
-  override protected def afterAll(): Unit = TestKit.shutdownActorSystem(system)
+  override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
 
   "Trainer Router actor" should {
     "create 10 children" in {
@@ -102,7 +104,7 @@ class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec
   private def createRouterRef() =
     system.actorOf(Props(new TrainerRouterActor(policyProbe.ref, 2000, 0) {
       override val childTrainer: TrainerChildActor = new TrainerChildActor(policyProbe.ref, 2000, 0) {
-        override def train(stockData: SharePriceGetter.StockDataResponse): Future[Double] = Future {10}
+        override def train(stockData: SharePriceGetter.StockDataResponse): Future[Double] = Future {10.0} (ex)
       }
     }), "trainer-router-actor")
 }

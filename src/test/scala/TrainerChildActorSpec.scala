@@ -1,4 +1,5 @@
 import java.time.LocalDate
+import java.time.chrono.ChronoLocalDate
 
 import QDecisionPolicyActor.{SelectionAction, Sell}
 import SharePriceGetter.StockDataResponse
@@ -53,6 +54,8 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
   }
 
   private def normalTrainedCase(): ActorRef = {
+    implicit val localDateOrdering: Ordering[LocalDate] = Ordering.by(identity[ChronoLocalDate])
+
     val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
     val stockData = StockDataResponse("my-share", TreeMap(sharePrices.toArray: _*))
     trainer ! Train(stockData)
