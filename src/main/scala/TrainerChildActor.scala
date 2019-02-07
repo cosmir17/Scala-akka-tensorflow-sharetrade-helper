@@ -1,3 +1,5 @@
+import java.lang.IllegalArgumentException
+
 import QDecisionPolicyActor._
 import SharePriceGetter.StockDataResponse
 import TrainerChildActor._
@@ -56,8 +58,9 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
   initialize()
 
   def train(stockData: StockDataResponse): Future[Double] = stockData match {
+    case StockDataResponse(_, sharePrices) if sharePrices.size != 202 =>
+      throw new IllegalArgumentException("Stock prices don't match with the number of Tensorflow input nodes(202")
     case StockDataResponse(_, sharePrices) =>
-      val fee = 10.14 //todo UK stamp fee
       val pricesWithoutLastHDim = sharePrices.size - QDecisionPolicyActor.h1Dim
       val pricesIndexed = sharePrices.toIndexedSeq.map(_._2.toFloat)
       val budgetNoOfStockShareVFolded = computeWithFolding(QDecisionPolicyActor.h1Dim, pricesWithoutLastHDim, pricesIndexed)

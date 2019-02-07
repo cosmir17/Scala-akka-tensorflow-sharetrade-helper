@@ -9,7 +9,7 @@ import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.pattern.ask
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
-import org.scalatest.{BeforeAndAfterAll, WordSpecLike}
+import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
 
 import scala.collection.immutable.TreeMap
 import scala.concurrent.ExecutionContext
@@ -17,7 +17,7 @@ import scala.concurrent.duration._
 import scala.util.Success
 
 class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
-  with ImplicitSender with WordSpecLike with BeforeAndAfterAll {
+  with ImplicitSender with WordSpecLike with BeforeAndAfterAll with Matchers {
 
   implicit val ex: ExecutionContext = system.dispatcher
   implicit val timeout: Timeout = Timeout(20 seconds)
@@ -34,6 +34,12 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
   assert(future.isCompleted && future.value == Some(Success(Sell)))
 
   "Trainer actor" should {
+    "throw invalid input error when StockDataResponse contains a different number of stock prices from the number of Tensor input nodes" in {
+      the [IllegalArgumentException] thrownBy {
+        system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
+      } should have message "Stock prices don't match with the number of Tensorflow input nodes(202)"
+    }
+
     "return NotComputed at initial stage when it receives GetPortpolio message" in {
       val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
       trainer ! GetPortfolio
@@ -41,11 +47,11 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
     }
 
     "return TrainingData at initial stage when it receives Train message" in {
-      normalTrainedCase
+      normalTrainedCase()
     }
 
     "return NotComputed at rollback stage when it receives GetPortfolio message" in {
-      val trainer = normalTrainedCase
+      val trainer = normalTrainedCase()
       trainer ! Initialise
       trainer ! GetPortfolio
       expectMsg(NotComputed)
