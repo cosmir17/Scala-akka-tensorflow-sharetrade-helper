@@ -6,42 +6,39 @@ import SharePriceGetter.StockDataResponse
 import TrainerChildActor.{GetPortfolio, Initialise, Train}
 import TrainerRouterActor.{NotComputed, Trained, TrainingData}
 import akka.actor.{ActorRef, ActorSystem, Props}
-import akka.pattern.ask
-import akka.testkit.{ImplicitSender, TestKit, TestProbe}
+import akka.testkit.{EventFilter, ImplicitSender, TestActorRef, TestKit, TestProbe}
 import akka.util.Timeout
-import org.scalatest.{BeforeAndAfterAll, Matchers, WordSpecLike}
+import com.typesafe.config.ConfigFactory
+import org.scalatest.{BeforeAndAfterAll, OneInstancePerTest, WordSpecLike}
 
 import scala.collection.immutable.TreeMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
-import scala.util.Success
 
-class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
-  with ImplicitSender with WordSpecLike with BeforeAndAfterAll with Matchers {
+class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec", ConfigFactory.parseString("""
+  akka.loggers = ["akka.testkit.TestEventListener"]"""))) with ImplicitSender with WordSpecLike with BeforeAndAfterAll with OneInstancePerTest {
 
   implicit val ex: ExecutionContext = system.dispatcher
   implicit val timeout: Timeout = Timeout(20 seconds)
+  implicit val localDateOrdering: Ordering[LocalDate] = Ordering.by(identity[ChronoLocalDate])
 
   override def afterAll(): Unit = TestKit.shutdownActorSystem(system)
 
-  private val sharePrices = (55 until 255).map(i => LocalDate.of(2001, 7, 10).plusDays(i) -> i.toDouble)
-
-  private val policyProbe = TestProbe()
-  private val sa = SelectionAction(_, _)
-  private val future = policyProbe.ref ? sa
-  policyProbe.expectMsg(0 millis, sa)
-  policyProbe.reply(Sell)
-  assert(future.isCompleted && future.value == Some(Success(Sell)))
-
   "Trainer actor" should {
     "throw invalid input error when StockDataResponse contains a different number of stock prices from the number of Tensor input nodes" in {
-      the [IllegalArgumentException] thrownBy {
-        system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
-      } should have message "Stock prices don't match with the number of Tensorflow input nodes(202)"
+      val policyProbe = TestProbe()
+      val sharePrices = (55 until 100).map(i => LocalDate.of(2001, 7, 10).plusDays(i) -> i.toDouble)
+      val stockData = StockDataResponse("my-share", TreeMap(sharePrices.toArray: _*))
+      val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor-test")
+
+      EventFilter[IllegalArgumentException](occurrences = 1) intercept {
+        trainer ! Train(stockData)
+      }
     }
 
     "return NotComputed at initial stage when it receives GetPortpolio message" in {
-      val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
+      val policyProbe = TestProbe()
+      val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor-test")
       trainer ! GetPortfolio
       expectMsg(NotComputed)
     }
@@ -60,14 +57,21 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
   }
 
   private def normalTrainedCase(): ActorRef = {
-    implicit val localDateOrdering: Ordering[LocalDate] = Ordering.by(identity[ChronoLocalDate])
-
-    val trainer = system.actorOf(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), "trainer-actor")
+    val sharePrices = (55 until 257).map(i => LocalDate.of(2001, 7, 10).plusDays(i) -> i.toDouble)
     val stockData = StockDataResponse("my-share", TreeMap(sharePrices.toArray: _*))
+    assert(sharePrices.size >= 202)
+    val parent = TestProbe()
+    val policyProbe = TestProbe()
+    val trainer = TestActorRef(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), parent.ref, "ChildActor")
+
     trainer ! Train(stockData)
-    expectMsg(Trained)
+    policyProbe.expectMsgType[SelectionAction]
+    policyProbe.reply(Sell)
+
+    parent.expectMsg(Trained)
     trainer ! GetPortfolio
-    expectMsg(TrainingData) //ToDo I haven't made the ML part working yet. Verification of this trained data will be done once it's working.
+    expectMsgType[TrainingData]
+
     trainer
   }
 }

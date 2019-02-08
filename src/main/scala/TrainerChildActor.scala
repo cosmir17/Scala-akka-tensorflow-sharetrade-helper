@@ -1,14 +1,11 @@
-import java.lang.IllegalArgumentException
-
 import QDecisionPolicyActor._
 import SharePriceGetter.StockDataResponse
 import TrainerChildActor._
 import TrainerRouterActor._
 import akka.actor.{ActorRef, FSM}
-import akka.pattern.pipe
-import org.platanios.tensorflow.api.{Tensor, tfi}
+import akka.pattern.{ask, pipe}
+import org.platanios.tensorflow.api.Tensor
 
-import scala.collection.immutable
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -58,13 +55,12 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
   initialize()
 
   def train(stockData: StockDataResponse): Future[Double] = stockData match {
-    case StockDataResponse(_, sharePrices) if sharePrices.size != 202 =>
-      throw new IllegalArgumentException("Stock prices don't match with the number of Tensorflow input nodes(202")
-    case StockDataResponse(_, sharePrices) =>
-      val pricesWithoutLastHDim = sharePrices.size - QDecisionPolicyActor.h1Dim
+    case StockDataResponse(_, sharePrices) if sharePrices.size > QDecisionPolicyActor.h1Dim + 1 =>
       val pricesIndexed = sharePrices.toIndexedSeq.map(_._2.toFloat)
-      val budgetNoOfStockShareVFolded = computeWithFolding(QDecisionPolicyActor.h1Dim, pricesWithoutLastHDim, pricesIndexed)
+      val budgetNoOfStockShareVFolded = computeWithFolding(QDecisionPolicyActor.h1Dim, sharePrices.size - QDecisionPolicyActor.h1Dim - 1, pricesIndexed, sender())
       budgetNoOfStockShareVFolded.map(tuple => tuple._1 + tuple._2 * tuple._3)
+    case StockDataResponse(_, _) =>
+      throw new IllegalArgumentException("Stock price count should be more than Tensorflow input nodes")
   }
 
   /**
@@ -72,25 +68,26 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
     * updated values(budget, no of stock shares and share value) should be passed on to next iteration.
     *
     * @param historyDim
-    * @param pricesWithoutLastHDim
+    * @param priceCountsExcludingH1Dim
     * @param pricesIndexed
     * @return (1 updated budget, 2 no of stock shares, 3 share value) tuple
     */
-  private def computeWithFolding(historyDim: Int, pricesWithoutLastHDim: Int, pricesIndexed: immutable.IndexedSeq[Float]): Future[UpdatedBudgetNoOfStocksShareValue] =
-    (0 until pricesWithoutLastHDim).foldLeft[Future[UpdatedBudgetNoOfStocksShareValue]](Future {
+  private def computeWithFolding(historyDim: Int, priceCountsExcludingH1Dim: Int, pricesIndexed: IndexedSeq[Float], origSender: ActorRef)
+  : Future[UpdatedBudgetNoOfStocksShareValue] =
+    (0 until priceCountsExcludingH1Dim).foldLeft[Future[UpdatedBudgetNoOfStocksShareValue]](Future {
       (myBudget, noOfStocks, 0.0)
     }) { //seed is budget, noStock, shareValue
       (budgetNoOfStockShareValueTupleFuture, i) =>
-        println(s"progress ${100 * i / pricesIndexed.size - historyDim - 1}%")
-        val currentState: Future[Tensor[Float]] = budgetNoOfStockShareValueTupleFuture.map(budgetStocks =>
-          tfi.stack(Seq(pricesIndexed.slice(i, i+historyDim + 1), budgetStocks._1.toFloat, budgetStocks._2.toFloat), axis=0))
+        println(s"progress ${100 * i / (pricesIndexed.size - historyDim - 1)}%")
+        val currentState: Future[Tensor[Float]] =
+          budgetNoOfStockShareValueTupleFuture.map(budgetStocks => pricesIndexed.slice(i, i+historyDim + 1) ++ Seq(budgetStocks._1.toFloat, budgetStocks._2.toFloat))
         val currentPortfolio = budgetNoOfStockShareValueTupleFuture.map(tuple => tuple._1 + tuple._2 * tuple._3)
-        val actionFuture = (currentState.map(cs => SelectionAction(cs, i.toFloat)) pipeTo policyActor).mapTo[Action]
+        val actionFuture = currentState.map(cs => SelectionAction(cs, i.toFloat)).flatMap(m => policyActor.ask(m)(timeout, origSender).mapTo[Action])
         val newShareValue: Double = pricesIndexed(i + historyDim + 1)
         val newBudgetNoOfStockAction = makeDecisionAccordingToAction(actionFuture, newShareValue)
         val rewardAndNewStateTuple = extractRewardAndNewState(i, currentPortfolio, newShareValue, pricesIndexed, historyDim, newBudgetNoOfStockAction)
 
-        createUpdateQ(currentState, rewardAndNewStateTuple) pipeTo policyActor
+        createUpdateQ(currentState, rewardAndNewStateTuple).pipeTo(policyActor)(origSender)
         newBudgetNoOfStockAction.map(tuple => (tuple._1, tuple._2, newShareValue))
     }
 
@@ -127,7 +124,7 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
     } yield {
       val newPortfolio = newBudgetNoOfStockAction._1 + newBudgetNoOfStockAction._2 * newShareValue
       val reward = newPortfolio - currentPortfolio
-      val newState: Tensor[Float] = tfi.stack(Seq(pricesIndexed.slice(i + 1, i + historyDim + 2), newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat), axis=0)
+      val newState: Tensor[Float] = pricesIndexed.slice(i + 1, i + historyDim + 2) ++ Seq(newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat)
       (reward, newState)
     }
 
