@@ -65,8 +65,8 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec", Conf
     val trainer = TestActorRef(Props(new TrainerChildActor(policyProbe.ref, 2000, 0)), parent.ref, "ChildActor")
 
     trainer ! Train(stockData)
-    policyProbe.expectMsgType[SelectionAction]
-    policyProbe.reply(Sell)
+    policyProbe.expectMsgType[SelectionAction] //mocking
+    policyProbe.reply(Sell) //mocking
 
     parent.expectMsg(Trained)
     trainer ! GetPortfolio

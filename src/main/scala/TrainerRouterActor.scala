@@ -1,11 +1,10 @@
 import SharePriceGetter.StockDataResponse
-import ShareTradeHelper.system
 import TrainerChildActor.{GetPortfolio, Train}
 import TrainerRouterActor._
 import akka.actor.SupervisorStrategy.{Escalate, Restart, Resume, Stop}
 import akka.actor.{Actor, ActorRef, OneForOneStrategy, Props, Stash, Terminated}
 import akka.pattern.{Backoff, BackoffSupervisor, ask, pipe}
-import akka.routing.{ActorRefRoutee, Router, SmallestMailboxRoutingLogic}
+import akka.routing._
 import akka.util.Timeout
 
 import scala.concurrent.duration._
@@ -30,20 +29,20 @@ object TrainerRouterActor {
   case object NotComputed extends TrainerData
   case class TrainingData(portfolio: Double) extends TrainerData
 
-  case class Died(ref: ActorRef)
+  case class Died(ref: ActorRef, router: Router)
 
   val noOfChildren = 10
   def props(policyActor: ActorRef, budget: Double, noOfStocks: Int) = Props(new TrainerRouterActor(policyActor, budget, noOfStocks))
 }
 
 class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int) extends Actor with Stash {
-  implicit val ec: ExecutionContext = system.dispatcher
+  implicit val ec: ExecutionContext = context.dispatcher
   implicit val timeout: Timeout = Timeout(10 seconds)
 
-  val childTrainer: TrainerChildActor = new TrainerChildActor(policyActor, budget, noOfStocks) //this is for test
+  lazy val childTrainerProp: Props = Props(new TrainerChildActor(policyActor, budget, noOfStocks)) //this is for test
 
-  private def childProps: Props = BackoffSupervisor.props(Backoff.onFailure(
-    Props(childTrainer),
+  private lazy val childProps: Props = BackoffSupervisor.props(Backoff.onFailure(
+    childTrainerProp,
     "child-trainer",
     3 seconds,
     1 minute,
@@ -62,74 +61,85 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
     ActorRefRoutee(child)
   }
 
-  private lazy val router = Router(SmallestMailboxRoutingLogic(), children)
+  override def receive: Receive = awaitingTrainingData(Router(BroadcastRoutingLogic(), children))
 
-  override def receive: Receive = noTrainingDataAvailable
-
-  private def noTrainingDataAvailable: Receive = {
+  private def awaitingTrainingData(router: Router): Receive = getRoutees(router) orElse {
     case SendTrainingData(stockData) =>
       unstashAll()
-      context.become(training(stockData))
+      context.become(training(stockData, router))
     case GetStd | GetAvg | StartTraining | IsEverythingDone =>
       sender() ! NoTrainingDataReceived
+    case GetRoutees =>
+      sender() ! router.routees
     case _ =>
       stash() //for async functions
   }
 
-  private def common(trainingDataInput: StockDataResponse): Receive = {
+  private def commonForPrePostTraining(trainingDataInput: StockDataResponse, actors: Option[Seq[ActorRef]], router: Router): Receive =
+    getRoutees(router) orElse {
     case StartTraining =>
       router.route(Train(trainingDataInput), sender())
+    case GetStd =>
+      actors.foldLeft[Future[_]](Future{NotComputed})(
+        (_, actorSeq) => computePortfolios(actorSeq).map(stdDev[Double])) pipeTo sender()
+    case GetAvg =>
+      actors.foldLeft[Future[_]](Future{NotComputed})(
+        (_, actorSeq) => computePortfolios(actorSeq).map(portfolios => portfolios.sum / portfolios.size)) pipeTo sender()
   }
 
-  private def training(trainingDataInput: StockDataResponse): Receive = common(trainingDataInput) orElse {
+  private def training(trainingDataInput: StockDataResponse, router: Router): Receive =
+    commonForPrePostTraining(trainingDataInput, None, router) orElse {
     case GetStd | GetAvg | IsEverythingDone =>
       sender() ! NotComputed
     case Terminated(ref) =>
-      createNewChildWhenTerminated(ref)
+      context.become(training(trainingDataInput, createNewChildWhenTerminated(ref, router)))
     case Trained =>
-      router.removeRoutee(sender())
       unstashAll()
-      context.become(trained(trainingDataInput, Seq(sender())))
+      context.become(trained(trainingDataInput, Seq(sender()), router.removeRoutee(sender())))
     case _ =>
       stash()
   }
 
-  private def trained(trainingDataInput: StockDataResponse, actors: Seq[ActorRef]): Receive = common(trainingDataInput) orElse {
+  private def trained(trainingDataInput: StockDataResponse, actors: Seq[ActorRef], router: Router): Receive =
+    commonForPrePostTraining(trainingDataInput, Some(actors), router) orElse {
     case Trained =>
-      router.removeRoutee(sender())
-      val trainedActors = actors :+ sender()
-      if(trainedActors.size == noOfChildren) context.become(completed(trainingDataInput, trainedActors))
-      else context.become(trained(trainingDataInput, trainedActors))
+      val trainedActors = actors :+ sender(); val cleanedRouter = router.removeRoutee(sender())
+      if(trainedActors.size == noOfChildren) context.become(completed(trainingDataInput, trainedActors, cleanedRouter))
+      else context.become(trained(trainingDataInput, trainedActors, cleanedRouter))
     case Terminated(ref) =>
-      createNewChildWhenTerminated(ref)
-      self ! Died(ref)
+      self ! Died(ref, createNewChildWhenTerminated(ref, router))
       self ! StartTraining
-    case Died(ref) if actors.contains(ref) =>
-      context.become(trained(trainingDataInput, actors.diff(Seq(ref))))
-    case GetStd =>
-      computePortfolios(actors).map(mean[Double]) pipeTo sender()
-    case GetAvg =>
-      computePortfolios(actors).map(portfolios => portfolios.sum / portfolios.size) pipeTo sender()
+    case Died(ref, newRouter) if actors.contains(ref) =>
+      context.become(trained(trainingDataInput, actors.diff(Seq(ref)), newRouter))
     case IsEverythingDone =>
       sender() ! NotCompleted
   }
 
-  private def completed(trainingDataInput: StockDataResponse, actors: Seq[ActorRef]): Receive = {
+  private def completed(trainingDataInput: StockDataResponse, actors: Seq[ActorRef], router: Router): Receive =
+    getRoutees(router) orElse commonForPrePostTraining(trainingDataInput, Some(actors), router) orElse {
     case IsEverythingDone =>
+      println("Completed")
       sender() ! Completed
   }
 
-  private def computePortfolios(actors: Seq[ActorRef]): Future[Seq[Double]] = Future
-      .sequence(actors.map(_ ? GetPortfolio).map(_.mapTo[TrainerData]))
-      .map(_.flatMap { case TrainingData(p) => Some(p); case _ => None })
-
-  private def createNewChildWhenTerminated(ref: ActorRef): ActorRef = {
-    router.removeRoutee(ref)
-    val newChild = context.actorOf(childProps)
-    context.watch(newChild)
-    router.addRoutee(newChild)
-    newChild
+  private def getRoutees(router: Router): Receive = {
+    case GetRoutees =>
+      sender() ! router.routees
   }
 
-  def mean[T](xs: Iterable[T])(implicit T: Fractional[T]): T = T.div(xs.sum, T.fromInt(xs.size))
+  private def computePortfolios(actors: Seq[ActorRef]): Future[Seq[Double]] = Future.sequence(actors
+        .map(_ ? GetPortfolio)
+        .map(_.mapTo[TrainerData])).map(_.flatMap{case TrainingData(p) => Some(p); case _ => None})
+
+  private def createNewChildWhenTerminated(ref: ActorRef, router: Router): Router = {
+    val routerCleaned = router.removeRoutee(ref)
+    val newChild = context.actorOf(childProps)
+    context.watch(newChild)
+    routerCleaned.addRoutee(newChild)
+  }
+
+  import Numeric.Implicits._ //The following three functions are copied from https://stackoverflow.com/questions/39617213/scala-what-is-the-generic-way-to-calculate-standard-deviation/44878370
+  def mean[T: Numeric](xs: Iterable[T]): Double = xs.sum.toDouble / xs.size
+  def variance[T: Numeric](xs: Iterable[T]): Double = xs.map(_.toDouble).map(a => math.pow(a - mean(xs), 2)).sum / xs.size
+  def stdDev[T: Numeric](xs: Iterable[T]): Double = math.sqrt(variance(xs))
 }

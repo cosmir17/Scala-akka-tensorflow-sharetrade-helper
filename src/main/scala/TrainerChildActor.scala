@@ -30,6 +30,7 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
   when(Ready) {
     case Event(Train(stockData), NotComputed) =>
       val portfolioFuture = train(stockData)
+      println("training ended")
       portfolioFuture.map(TrainingData) pipeTo self
       stay()
     case Event(t@TrainingData(_), NotComputed) =>
@@ -44,6 +45,9 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
   }
 
   when(Trained) {
+    case Event(Train(_), _) =>
+      println("it's already trained")
+      stay()
     case Event(GetPortfolio, t@TrainingData(_)) =>
       sender() ! t
       stay()

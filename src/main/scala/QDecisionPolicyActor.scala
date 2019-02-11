@@ -61,7 +61,7 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       val nextActionQVals: Tensor[Float] = session.run(feeds = Map(x -> nextState), q)
       val indexNext = nextActionQVals.reshape(Shape(-1)).argmax(0).scalar.toInt
       val specificIndexValueToBeUpdated: Float = reward + gamma * nextActionQVals(0)(indexNext).scalar
-      val newActionQVals = actionQVals //Todo actionQVals(0)(indexNext) = specificIndexValueToBeUpdated
+      val newActionQVals: Tensor[Float] = assignValueToTensorCoordinate(actionQVals, 0, indexNext, specificIndexValueToBeUpdated)
       val squeezedNewActionQVals: Tensor[Float] = squeeze(newActionQVals)
       val updatedFeeds = Map(x -> state, y -> squeezedNewActionQVals)
       session.run(feeds = updatedFeeds, targets = trainOp)
@@ -77,6 +77,8 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       log.warning(s"saving snapshot $metadata, failed because of $reason")
   }
 
+
+
   override def receiveRecover: Receive = {
     case SnapshotOffer(metadata, session) =>
       log.info(s"Recovered snapshot: $metadata")
@@ -90,4 +92,11 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
     sess
   }
 
+  private def assignValueToTensorCoordinate(input: Tensor[Float], x: Int, y: Int, replacingValue: Float) = {
+    val Array(m, n) = input.shape.asArray
+    val arr = Array.tabulate(m, n)((i, j) => input(i, j).scalar)
+    arr(x)(y) = replacingValue
+    val output: Tensor[Float] = arr
+    output
+  }
 }
