@@ -77,8 +77,6 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       log.warning(s"saving snapshot $metadata, failed because of $reason")
   }
 
-
-
   override def receiveRecover: Receive = {
     case SnapshotOffer(metadata, session) =>
       log.info(s"Recovered snapshot: $metadata")

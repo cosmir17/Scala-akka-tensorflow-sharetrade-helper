@@ -5,7 +5,7 @@ import QDecisionPolicyActor.{SelectionAction, Sell}
 import SharePriceGetter.StockDataResponse
 import TrainerRouterActor._
 import akka.actor.{ActorRef, ActorSystem, PoisonPill, Props}
-import akka.pattern.ask
+import akka.pattern.{ask, pipe}
 import akka.routing.{GetRoutees, Routee}
 import akka.testkit.{ImplicitSender, TestKit, TestProbe}
 import akka.util.Timeout
@@ -110,7 +110,14 @@ class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec
       val thirdRoutee: Routee = killThirdRoutee(router)
 
       thirdRouteeShouldBeDeletedAndNewOneShouldBeCreated(router, thirdRoutee)
-      awaitAssert({router ! GetAvg; expectMsg[Double](10.0)})
+      awaitAssert({router ! GetAvg; expectMsg[Double](10.0)}, 5 seconds, 10 millisecond)
+    }
+
+    "Should not cause Dead letters and fail the router when messages are sent asynchronously, future etc" in {
+      val router = createRouterRef()
+      Future{Thread.sleep(500); stockData}.map(SendTrainingData) pipeTo router
+      router ! StartTraining
+      awaitAssert({router ! IsEverythingDone; expectMsg[TrainerState](Completed)}, 10 seconds, 10 millisecond)
     }
   }
 

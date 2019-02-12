@@ -56,7 +56,7 @@ class SharePriceGetter extends PersistentActor with ActorLogging {
       log.info("Recovery is finished")
     case Event(name, sharePrices) =>
       val stocks = HashMap(name -> sharePrices)
-      log.info(s"Recovery for ${stocks.foreach(entry => println(s"stock name : ${entry._1}    value : ${entry._2}"))}")
+      log.info(s"Recovery for ${stocks.foreach(entry => print(s"stock name : ${entry._1} "))}")
       context.become(queried(stocks))
   }
 

@@ -24,7 +24,7 @@ object ShareTradeHelper extends App {
   val stockPrices: Future[StockDataResponse] = (sharePriceGetter ? stockPriceListRequest).mapTo[StockDataResponse]
   val trainerRouterActor = system.actorOf(TrainerRouterActor.props(policyActor, budget, noOfStocks), "Trainer-parent-actor")
   stockPrices.map(SendTrainingData) pipeTo trainerRouterActor
-  (0 until TrainerRouterActor.noOfChildren).foreach(_ => trainerRouterActor ! StartTraining)
+  trainerRouterActor ! StartTraining
 
   (0 to 100).find(_ => { //This is not an web server and blocking is ok here, waiting until Tensorflow simulates final results.
       Thread.sleep(1000)

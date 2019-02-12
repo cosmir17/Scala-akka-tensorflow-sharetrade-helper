@@ -4,7 +4,7 @@ import java.time.chrono.ChronoLocalDate
 import QDecisionPolicyActor.{SelectionAction, Sell}
 import SharePriceGetter.StockDataResponse
 import TrainerChildActor.{GetPortfolio, Initialise, Train}
-import TrainerRouterActor.{NotComputed, Trained, TrainingData}
+import TrainerRouterActor.{NotComputed, Trained, TrainedData}
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.testkit.{EventFilter, ImplicitSender, TestActorRef, TestKit, TestProbe}
 import akka.util.Timeout
@@ -70,7 +70,7 @@ class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec", Conf
 
     parent.expectMsg(Trained)
     trainer ! GetPortfolio
-    expectMsgType[TrainingData]
+    expectMsgType[TrainedData]
 
     trainer
   }

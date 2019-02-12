@@ -2,13 +2,14 @@ import SharePriceGetter.StockDataResponse
 import TrainerChildActor.{GetPortfolio, Train}
 import TrainerRouterActor._
 import akka.actor.SupervisorStrategy.{Escalate, Restart, Resume, Stop}
-import akka.actor.{Actor, ActorRef, OneForOneStrategy, Props, Stash, Terminated}
+import akka.actor.{Actor, ActorLogging, ActorRef, OneForOneStrategy, Props, Stash, Terminated}
 import akka.pattern.{Backoff, BackoffSupervisor, ask, pipe}
 import akka.routing._
 import akka.util.Timeout
 
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
+import scala.language.postfixOps
 
 object TrainerRouterActor {
   sealed trait Trainer
@@ -20,14 +21,14 @@ object TrainerRouterActor {
 
   sealed trait TrainerState
   case object Ready extends TrainerState
+  case object NoTrainingDataReceived extends TrainerState
   case object Trained extends TrainerState
-  case object NotCompleted extends TrainerState
+  case object TrainingNotCompleted extends TrainerState
   case object Completed extends TrainerState
 
   sealed trait TrainerData
-  case object NoTrainingDataReceived extends TrainerData
-  case object NotComputed extends TrainerData
-  case class TrainingData(portfolio: Double) extends TrainerData
+  case object NotComputed extends TrainerData with TrainerState
+  case class TrainedData(portfolio: Double) extends TrainerData
 
   case class Died(ref: ActorRef, router: Router)
 
@@ -35,7 +36,7 @@ object TrainerRouterActor {
   def props(policyActor: ActorRef, budget: Double, noOfStocks: Int) = Props(new TrainerRouterActor(policyActor, budget, noOfStocks))
 }
 
-class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int) extends Actor with Stash {
+class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int) extends Actor with Stash with ActorLogging {
   implicit val ec: ExecutionContext = context.dispatcher
   implicit val timeout: Timeout = Timeout(10 seconds)
 
@@ -65,19 +66,24 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
 
   private def awaitingTrainingData(router: Router): Receive = getRoutees(router) orElse {
     case SendTrainingData(stockData) =>
+      log.info("training data received")
       unstashAll()
-      context.become(training(stockData, router))
-    case GetStd | GetAvg | StartTraining | IsEverythingDone =>
+      context.become(trainingDataPresent(stockData, router))
+    case GetStd | GetAvg | IsEverythingDone =>
       sender() ! NoTrainingDataReceived
     case GetRoutees =>
       sender() ! router.routees
-    case _ =>
-      stash() //for async functions
+    case StartTraining =>
+      stash()
+    case unknown =>
+      log.info(s"unknown : $unknown message received")
+      stash()
   }
 
   private def commonForPrePostTraining(trainingDataInput: StockDataResponse, actors: Option[Seq[ActorRef]], router: Router): Receive =
     getRoutees(router) orElse {
     case StartTraining =>
+      log.info("training start")
       router.route(Train(trainingDataInput), sender())
     case GetStd =>
       actors.foldLeft[Future[_]](Future{NotComputed})(
@@ -87,12 +93,12 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
         (_, actorSeq) => computePortfolios(actorSeq).map(portfolios => portfolios.sum / portfolios.size)) pipeTo sender()
   }
 
-  private def training(trainingDataInput: StockDataResponse, router: Router): Receive =
+  private def trainingDataPresent(trainingDataInput: StockDataResponse, router: Router): Receive =
     commonForPrePostTraining(trainingDataInput, None, router) orElse {
     case GetStd | GetAvg | IsEverythingDone =>
       sender() ! NotComputed
     case Terminated(ref) =>
-      context.become(training(trainingDataInput, createNewChildWhenTerminated(ref, router)))
+      context.become(trainingDataPresent(trainingDataInput, createNewChildWhenTerminated(ref, router)))
     case Trained =>
       unstashAll()
       context.become(trained(trainingDataInput, Seq(sender()), router.removeRoutee(sender())))
@@ -112,13 +118,13 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
     case Died(ref, newRouter) if actors.contains(ref) =>
       context.become(trained(trainingDataInput, actors.diff(Seq(ref)), newRouter))
     case IsEverythingDone =>
-      sender() ! NotCompleted
+      sender() ! TrainingNotCompleted
   }
 
   private def completed(trainingDataInput: StockDataResponse, actors: Seq[ActorRef], router: Router): Receive =
     getRoutees(router) orElse commonForPrePostTraining(trainingDataInput, Some(actors), router) orElse {
     case IsEverythingDone =>
-      println("Completed")
+      log.info("Completed")
       sender() ! Completed
   }
 
@@ -129,7 +135,7 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
 
   private def computePortfolios(actors: Seq[ActorRef]): Future[Seq[Double]] = Future.sequence(actors
         .map(_ ? GetPortfolio)
-        .map(_.mapTo[TrainerData])).map(_.flatMap{case TrainingData(p) => Some(p); case _ => None})
+        .map(_.mapTo[TrainerData])).map(_.flatMap{case TrainedData(p) => Some(p); case _ => None})
 
   private def createNewChildWhenTerminated(ref: ActorRef, router: Router): Router = {
     val routerCleaned = router.removeRoutee(ref)
