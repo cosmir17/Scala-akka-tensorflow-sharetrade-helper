@@ -4,14 +4,13 @@ import akka.persistence._
 import org.platanios.tensorflow.api.core.Shape
 import org.platanios.tensorflow.api.core.client.Session
 import org.platanios.tensorflow.api.tensors.Tensor
-import org.platanios.tensorflow.api.tensors.ops.Basic._
 import org.platanios.tensorflow.api.{Output, tf}
 
 import scala.util.Random
 
 object QDecisionPolicyActor {
   val actions = Seq(Buy, Sell, Hold)
-  val inputDim = 200 + 2 // history + budget + shares
+  val inputDim = 201 + 2 // history + budget + shares
   val epsilon = 0.9f
   val gamma = 0.001f
   val outputDim: Int = actions.size
@@ -51,25 +50,30 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
   override def receiveCommand: Receive = iterateUpdate(initialiseSession(), 0)
 
   private def iterateUpdate(session: Session, iteration: Long): Receive = {
+
+    case SelectionAction(currentState, _) if currentState.size != inputDim =>
+      throw new IllegalArgumentException(s"SelectionAction received from ${sender().path.parent.name}, but tensorflow input size($inputDim) and state(${currentState.size}) size do not match")
     case SelectionAction(currentState, step) if Random.nextFloat() < Seq(epsilon, step / 1000f).min => //this returns BUY or SELL or HOLD
       val actionQVals = session.run(feeds = Map(x -> currentState), q) //does this update q?
       sender() ! actions(actionQVals.reshape(Shape(-1)).argmax(0).scalar.toInt)
     case SelectionAction(_, _) =>
       sender() ! actions(0 + Random.nextInt(actions.length))
+
+    case UpdateQ(state, _, nextState) if state.size != inputDim || nextState.size != inputDim =>
+      throw new IllegalArgumentException(s"update q received from ${sender().path.parent.name}, but tensorflow input size($inputDim) and state(or nextState)${state.size} size do not match")
     case UpdateQ(state, reward, nextState) =>
+      log.info(s"update q received from ${sender().path.parent.name}")
       val actionQVals = session.run(feeds = Map(x -> state), q)
       val nextActionQVals: Tensor[Float] = session.run(feeds = Map(x -> nextState), q)
       val indexNext = nextActionQVals.reshape(Shape(-1)).argmax(0).scalar.toInt
       val specificIndexValueToBeUpdated: Float = reward + gamma * nextActionQVals(0)(indexNext).scalar
       val newActionQVals: Tensor[Float] = assignValueToTensorCoordinate(actionQVals, 0, indexNext, specificIndexValueToBeUpdated)
-      val squeezedNewActionQVals: Tensor[Float] = squeeze(newActionQVals)
-      val updatedFeeds = Map(x -> state, y -> squeezedNewActionQVals)
+      val updatedFeeds = Map(x -> state, y -> newActionQVals)
       session.run(feeds = updatedFeeds, targets = trainOp)
       if(iteration % 500 == 0 && iteration != 0) { saveSnapshot((session, iteration)) }
-      self ! Updated
+      log.info("Q value is updated")
       context.become(iterateUpdate(session, iteration + 1))
-    case Updated =>
-      println("Q value is updated")
+
     case SaveSnapshotSuccess(metadata) =>
       log.debug("successfully saved snapshot {}, deleting prior snapshots...", metadata)
       deleteSnapshots(SnapshotSelectionCriteria.create(metadata.sequenceNr, metadata.timestamp - 1))
@@ -90,11 +94,10 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
     sess
   }
 
-  private def assignValueToTensorCoordinate(input: Tensor[Float], x: Int, y: Int, replacingValue: Float) = {
+  private def assignValueToTensorCoordinate(input: Tensor[Float], x: Int, y: Int, replacingValue: Float): Tensor[Float] = {
     val Array(m, n) = input.shape.asArray
-    val arr = Array.tabulate(m, n)((i, j) => input(i, j).scalar)
-    arr(x)(y) = replacingValue
-    val output: Tensor[Float] = arr
-    output
+    val seq = Seq.tabulate(m, n)((i, j) => input(i, j).scalar)
+    val updatedSeq: Tensor[Float] = seq.updated(x , seq(x).updated(y, replacingValue))
+    updatedSeq
   }
 }

@@ -36,7 +36,7 @@ object TrainerRouterActor {
   def props(policyActor: ActorRef, budget: Double, noOfStocks: Int) = Props(new TrainerRouterActor(policyActor, budget, noOfStocks))
 }
 
-class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int) extends Actor with Stash with ActorLogging {
+class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int) extends Actor with ActorLogging with Stash {
   implicit val ec: ExecutionContext = context.dispatcher
   implicit val timeout: Timeout = Timeout(10 seconds)
 

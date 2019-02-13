@@ -8,15 +8,15 @@ import TrainerRouterActor.{NotComputed, Trained, TrainedData}
 import akka.actor.{ActorRef, ActorSystem, Props}
 import akka.testkit.{EventFilter, ImplicitSender, TestActorRef, TestKit, TestProbe}
 import akka.util.Timeout
-import com.typesafe.config.ConfigFactory
 import org.scalatest.{BeforeAndAfterAll, OneInstancePerTest, WordSpecLike}
 
 import scala.collection.immutable.TreeMap
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration._
+import scala.language.postfixOps
 
-class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec", ConfigFactory.parseString("""
-  akka.loggers = ["akka.testkit.TestEventListener"]"""))) with ImplicitSender with WordSpecLike with BeforeAndAfterAll with OneInstancePerTest {
+class TrainerChildActorSpec extends TestKit(ActorSystem("TrainerActorSpec"))
+  with ImplicitSender with WordSpecLike with BeforeAndAfterAll with OneInstancePerTest {
 
   implicit val ex: ExecutionContext = system.dispatcher
   implicit val timeout: Timeout = Timeout(20 seconds)

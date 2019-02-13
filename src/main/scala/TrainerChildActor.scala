@@ -2,10 +2,12 @@ import QDecisionPolicyActor._
 import SharePriceGetter.StockDataResponse
 import TrainerChildActor._
 import TrainerRouterActor._
-import akka.actor.{ActorRef, FSM}
+import akka.actor.{ActorLogging, ActorRef, FSM}
 import akka.pattern.{ask, pipe}
 import org.platanios.tensorflow.api.Tensor
+import org.platanios.tensorflow.api.core.Shape
 
+import scala.language.postfixOps
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 
@@ -21,7 +23,7 @@ object TrainerChildActor {
   type UpdatedBudgetNoOfStocksShareValue = (Double, Int, Double)
 }
 
-class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int) extends FSM[TrainerState, TrainerData] {
+class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int) extends FSM[TrainerState, TrainerData] with ActorLogging {
   implicit val ec: ExecutionContext = context.dispatcher
   implicit val timeout: akka.util.Timeout = akka.util.Timeout(10 seconds)
 
@@ -29,24 +31,25 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
 
   when(Ready) {
     case Event(Train(stockData), NotComputed) =>
+      log.info(s"${self.path.parent.name.last} training starts")
       val portfolioFuture = train(stockData)
-      println("training ended")
       portfolioFuture.map(TrainedData) pipeTo self
       stay()
     case Event(t@TrainedData(_), NotComputed) =>
+      log.info(s"${self.path.parent.name.last} training finished")
       context.parent ! Trained
       goto(Trained) using t
     case Event(GetPortfolio, NotComputed) =>
       sender() ! NotComputed
       stay()
     case Event(Initialise, NotComputed) =>
-      println(s"${context.self.path.name} is already in ready state")
+      log.info(s"${self.path.parent.name.last} is already in ready state")
       stay()
   }
 
   when(Trained) {
     case Event(Train(_), _) =>
-      println("it's already trained")
+      log.info("it's already trained")
       stay()
     case Event(GetPortfolio, t@TrainedData(_)) =>
       sender() ! t
@@ -82,9 +85,10 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
       (myBudget, noOfStocks, 0.0)
     }) { //seed is budget, noStock, shareValue
       (budgetNoOfStockShareValueTupleFuture, i) =>
-        println(s"progress ${100 * i / (pricesIndexed.size - historyDim - 1)}%")
-        val currentState: Future[Tensor[Float]] =
-          budgetNoOfStockShareValueTupleFuture.map(budgetStocks => pricesIndexed.slice(i, i+historyDim + 1) ++ Seq(budgetStocks._1.toFloat, budgetStocks._2.toFloat))
+        loggingTrainingProgress(historyDim, pricesIndexed, i)
+        val currentState: Future[Tensor[Float]] = budgetNoOfStockShareValueTupleFuture
+            .map(budgetStocks => pricesIndexed.slice(i, i+historyDim + 1) ++ Seq(budgetStocks._1.toFloat, budgetStocks._2.toFloat))
+            .map(t => reshapeTensor(t))
         val currentPortfolio = budgetNoOfStockShareValueTupleFuture.map(tuple => tuple._1 + tuple._2 * tuple._3)
         val actionFuture = currentState.map(cs => SelectionAction(cs, i.toFloat)).flatMap(m => policyActor.ask(m)(timeout, origSender).mapTo[Action])
         val newShareValue: Double = pricesIndexed(i + historyDim + 1)
@@ -94,6 +98,11 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
         createUpdateQ(currentState, rewardAndNewStateTuple).pipeTo(policyActor)(origSender)
         newBudgetNoOfStockAction.map(tuple => (tuple._1, tuple._2, newShareValue))
     }
+
+  private def loggingTrainingProgress(historyDim: Int, pricesIndexed: IndexedSeq[Float], i: Int) = {
+    val percentage = 100 * i / (pricesIndexed.size - historyDim - 1)
+    if (i % 1000 == 0) log.info(s"${self.path.parent.name.last} progress $percentage%, index no: $i")
+  }
 
   /**
     * making decision of buying and selling shares or hold current position
@@ -128,8 +137,8 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
     } yield {
       val newPortfolio = newBudgetNoOfStockAction._1 + newBudgetNoOfStockAction._2 * newShareValue
       val reward = newPortfolio - currentPortfolio
-      val newState: Tensor[Float] = pricesIndexed.slice(i + 1, i + historyDim + 2) ++ Seq(newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat)
-      (reward, newState)
+      val newState = pricesIndexed.slice(i + 1, i + historyDim + 2) ++ Seq(newBudgetNoOfStockAction._1.toFloat, newBudgetNoOfStockAction._2.toFloat)
+      (reward, reshapeTensor(newState))
     }
 
   /**
@@ -143,6 +152,8 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
       cState <- currentState
       rewardAndNewStateTuple <- rewardAndNewState
     } yield UpdateQ(cState, rewardAndNewStateTuple._1.toFloat, rewardAndNewStateTuple._2)
+
+  private def reshapeTensor(floatSeq: IndexedSeq[Float]): Tensor[Float] = Tensor[Float](floatSeq).reshape(Shape(-1, floatSeq.size))
 }
 
 

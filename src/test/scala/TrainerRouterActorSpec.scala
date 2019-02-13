@@ -15,6 +15,7 @@ import scala.collection.immutable.TreeMap
 import scala.concurrent.duration._
 import scala.concurrent.{ExecutionContext, Future}
 import scala.util.Success
+import scala.language.postfixOps
 
 class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec"))
   with WordSpecLike with Matchers with ImplicitSender with BeforeAndAfterAll with OneInstancePerTest {
@@ -49,7 +50,7 @@ class TrainerRouterActorSpec extends TestKit(ActorSystem("TrainerRouterActorSpec
       router ! GetAvg
       expectMsg(NoTrainingDataReceived)
       router ! StartTraining
-      expectMsg(NoTrainingDataReceived)
+      expectNoMessage() //stashed
     }
 
     "return NotComputed in training stage when it receives GetStd and GetAvg messages" in {

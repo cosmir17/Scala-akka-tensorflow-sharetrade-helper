@@ -8,6 +8,7 @@ import akka.util.Timeout
 
 import scala.concurrent.duration._
 import scala.concurrent.{Await, ExecutionContext, Future}
+import scala.language.postfixOps
 
 object ShareTradeHelper extends App {
   val system = ActorSystem("ShareTradeHelperSystem")
