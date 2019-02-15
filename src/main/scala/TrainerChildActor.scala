@@ -1,10 +1,10 @@
 import QDecisionPolicyActor._
 import SharePriceGetter.StockDataResponse
-import TrainerChildActor._
+import TrainerChildActor.{UpdatedBudgetNoOfStocksShareValue, _}
 import TrainerRouterActor._
 import akka.actor.{ActorLogging, ActorRef, FSM}
 import akka.pattern.{ask, pipe}
-import org.platanios.tensorflow.api.Tensor
+import org.platanios.tensorflow.api.{Tensor, tf}
 import org.platanios.tensorflow.api.core.Shape
 
 import scala.language.postfixOps
@@ -85,24 +85,28 @@ class TrainerChildActor(policyActor: ActorRef, myBudget: Double, noOfStocks: Int
       (myBudget, noOfStocks, 0.0)
     }) { //seed is budget, noStock, shareValue
       (budgetNoOfStockShareValueTupleFuture, i) =>
-        loggingTrainingProgress(historyDim, pricesIndexed, i)
+        loggingTrainingProgress(historyDim, pricesIndexed, i, budgetNoOfStockShareValueTupleFuture)
         val currentState: Future[Tensor[Float]] = budgetNoOfStockShareValueTupleFuture
             .map(budgetStocks => pricesIndexed.slice(i, i+historyDim + 1) ++ Seq(budgetStocks._1.toFloat, budgetStocks._2.toFloat))
-            .map(t => reshapeTensor(t))
+            .map(reshapeTensor)
         val currentPortfolio = budgetNoOfStockShareValueTupleFuture.map(tuple => tuple._1 + tuple._2 * tuple._3)
         val actionFuture = currentState.map(cs => SelectionAction(cs, i.toFloat)).flatMap(m => policyActor.ask(m)(timeout, origSender).mapTo[Action])
         val newShareValue: Double = pricesIndexed(i + historyDim + 1)
         val newBudgetNoOfStockAction = makeDecisionAccordingToAction(actionFuture, newShareValue)
         val rewardAndNewStateTuple = extractRewardAndNewState(i, currentPortfolio, newShareValue, pricesIndexed, historyDim, newBudgetNoOfStockAction)
+        val updateQFuture = createUpdateQ(currentState, rewardAndNewStateTuple).flatMap(updateQ => policyActor.ask(updateQ)(timeout, origSender).mapTo[DecisionPolicy])
 
-        createUpdateQ(currentState, rewardAndNewStateTuple).pipeTo(policyActor)(origSender)
-        newBudgetNoOfStockAction.map(tuple => (tuple._1, tuple._2, newShareValue))
+        for {
+          _ <- updateQFuture
+          tuple <- newBudgetNoOfStockAction
+        } yield (tuple._1, tuple._2, newShareValue)
     }
 
-  private def loggingTrainingProgress(historyDim: Int, pricesIndexed: IndexedSeq[Float], i: Int) = {
-    val percentage = 100 * i / (pricesIndexed.size - historyDim - 1)
-    if (i % 1000 == 0) log.info(s"${self.path.parent.name.last} progress $percentage%, index no: $i")
-  }
+  private def loggingTrainingProgress(historyDim: Int, pricesIndexed: IndexedSeq[Float], i: Int, wait: Future[UpdatedBudgetNoOfStocksShareValue]) =
+    wait.map(_ => {
+      val percentage = 100 * i / (pricesIndexed.size - historyDim - 1)
+      if (i % 200 == 0) log.info(s"${self.path.parent.name.last} progress $percentage%, index no: $i")}
+    )
 
   /**
     * making decision of buying and selling shares or hold current position

@@ -26,8 +26,7 @@ object QDecisionPolicyActor {
   sealed trait DecisionPolicy
   case class SelectionAction(currentState: Tensor[Float], step: Float) extends DecisionPolicy
   case class UpdateQ(state: Tensor[Float], reward: Float, nextState: Tensor[Float]) extends DecisionPolicy
-
-  case object Updated
+  case object Updated extends DecisionPolicy
 }
 
 class QDecisionPolicyActor extends PersistentActor with ActorLogging {
@@ -54,7 +53,7 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
     case SelectionAction(currentState, _) if currentState.size != inputDim =>
       throw new IllegalArgumentException(s"SelectionAction received from ${sender().path.parent.name}, but tensorflow input size($inputDim) and state(${currentState.size}) size do not match")
     case SelectionAction(currentState, step) if Random.nextFloat() < Seq(epsilon, step / 1000f).min => //this returns BUY or SELL or HOLD
-      val actionQVals = session.run(feeds = Map(x -> currentState), q) //does this update q?
+      val actionQVals = session.run(feeds = Map(x -> currentState), q)
       sender() ! actions(actionQVals.reshape(Shape(-1)).argmax(0).scalar.toInt)
     case SelectionAction(_, _) =>
       sender() ! actions(0 + Random.nextInt(actions.length))
@@ -62,7 +61,6 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
     case UpdateQ(state, _, nextState) if state.size != inputDim || nextState.size != inputDim =>
       throw new IllegalArgumentException(s"update q received from ${sender().path.parent.name}, but tensorflow input size($inputDim) and state(or nextState)${state.size} size do not match")
     case UpdateQ(state, reward, nextState) =>
-      log.info(s"update q received from ${sender().path.parent.name}")
       val actionQVals = session.run(feeds = Map(x -> state), q)
       val nextActionQVals: Tensor[Float] = session.run(feeds = Map(x -> nextState), q)
       val indexNext = nextActionQVals.reshape(Shape(-1)).argmax(0).scalar.toInt
@@ -71,7 +69,7 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       val updatedFeeds = Map(x -> state, y -> newActionQVals)
       session.run(feeds = updatedFeeds, targets = trainOp)
       if(iteration % 500 == 0 && iteration != 0) { saveSnapshot((session, iteration)) }
-      log.info("Q value is updated")
+      sender() ! Updated
       context.become(iterateUpdate(session, iteration + 1))
 
     case SaveSnapshotSuccess(metadata) =>
@@ -97,7 +95,6 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
   private def assignValueToTensorCoordinate(input: Tensor[Float], x: Int, y: Int, replacingValue: Float): Tensor[Float] = {
     val Array(m, n) = input.shape.asArray
     val seq = Seq.tabulate(m, n)((i, j) => input(i, j).scalar)
-    val updatedSeq: Tensor[Float] = seq.updated(x , seq(x).updated(y, replacingValue))
-    updatedSeq
+    seq.updated(x , seq(x).updated(y, replacingValue))
   }
 }
