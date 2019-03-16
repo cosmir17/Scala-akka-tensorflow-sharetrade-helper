@@ -3,8 +3,7 @@ import akka.actor.{ActorLogging, Props}
 import akka.persistence._
 import org.platanios.tensorflow.api.core.Shape
 import org.platanios.tensorflow.api.core.client.Session
-import org.platanios.tensorflow.api.tensors.Tensor
-import org.platanios.tensorflow.api.{Output, tf}
+import org.platanios.tensorflow.api.{Output, tf, Tensor}
 
 import scala.util.Random
 
@@ -68,7 +67,9 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       val newActionQVals: Tensor[Float] = assignValueToTensorCoordinate(actionQVals, 0, indexNext, specificIndexValueToBeUpdated)
       val updatedFeeds = Map(x -> state, y -> newActionQVals)
       session.run(feeds = updatedFeeds, targets = trainOp)
-      if(iteration % 500 == 0 && iteration != 0) { saveSnapshot((session, iteration)) }
+
+
+      if(iteration % 500 == 0 && iteration != 0) { saveSnapshot((getTensorWeightToBeSaved(session), iteration)) }
       sender() ! Updated
       context.become(iterateUpdate(session, iteration + 1))
 
@@ -79,10 +80,31 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       log.warning(s"saving snapshot $metadata, failed because of $reason")
   }
 
+  private def getTensorWeightToBeSaved(session: Session) = {
+    val saver = tf.saver()
+    val saverDef = saver.toSaverDef()
+    val saveTensor = session.graph.getOutputByName(
+      saverDef.getSaveTensorName
+    ).asInstanceOf[Output[String]]
+
+
+    saveTensor
+  }
+
   override def receiveRecover: Receive = {
-    case SnapshotOffer(metadata, session) =>
+    case SnapshotOffer(metadata, recovered) =>
       log.info(s"Recovered snapshot: $metadata")
-      val recoveredSessionTuple = session.asInstanceOf[(Session, Long)]
+      val recoveredSessionTuple = recovered.asInstanceOf[(Session, Long)]
+
+      val session = initialiseSession()
+      val saver = tf.saver()
+      val saverDef = saver.toSaverDef()
+
+      session.graph.getOpByName(saverDef.getRestoreOpName)
+      session.run(
+        feeds = Map(filenameTensor -> savePath.toString.toTensor),
+        targets = Set(restoreOp))
+
       context.become(iterateUpdate(recoveredSessionTuple._1, recoveredSessionTuple._2))
   }
 
