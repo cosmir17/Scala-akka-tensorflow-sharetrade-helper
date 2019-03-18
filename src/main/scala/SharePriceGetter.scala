@@ -1,5 +1,6 @@
 import java.time.LocalDate
 import java.time.chrono.ChronoLocalDate
+import java.time.format.DateTimeFormatter
 
 import SharePriceGetter._
 import akka.actor.{ActorLogging, ActorRef}
@@ -72,7 +73,7 @@ class SharePriceGetter extends PersistentActor with ActorLogging {
   }
 
   /**
-    * Yahoo finance API no longer works so I am generating a sequence of numbers.
+    * Yahoo finance API no longer works and I am faking a http querie.
     * @param stockName
     * @param from
     * @param to
@@ -81,9 +82,28 @@ class SharePriceGetter extends PersistentActor with ActorLogging {
     */
   private def queryData(stockName: String, from: LocalDate, to: LocalDate, presentData: HashMap[String, SharePrices])
   : Future[SharePrices] =
-    Future {
-      val days = from.toEpochDay.to(to.toEpochDay).map(LocalDate.ofEpochDay)
-      val prices = days.indices.zip(days).map(d => (d._2, d._1.toDouble * 10))
-      HashMap(prices: _*)
+    Future { //faking a http query
+      import scala.io.Source
+      import shapeless.{HNil, ::}
+
+      val filename = "MSFT-stock-prices-revised.txt"
+      val priceDateList: List[Option[LocalDate]:: Option[Double]:: HNil] =
+        for (line <- Source.fromResource(filename).getLines.toList)
+          yield line.split(",").map(_.trim()).toSeq match {
+          case Seq(price, date) => parseDate(date) :: parseDouble(price) :: HNil
+          case Seq(price, date, _*) => parseDate(date) :: parseDouble(price) :: HNil
+          case _ => None :: None :: HNil
+        }
+      val parsed = priceDateList.flatMap {
+        case Some(date: LocalDate) :: Some(price: Double) :: _ => Some(date, price)
+        case _ => None
+      }
+      HashMap(parsed: _*)
     }
+
+  private def parseDouble(s: String) = try { Some(s.toDouble) } catch { case _: Throwable => None }
+  private def parseDate(s: String) = {
+    val dtf = DateTimeFormatter.ofPattern("yyyy-MM-dd")
+    try { Some(LocalDate.parse(s, dtf)) } catch { case _: Throwable => None }
+  }
 }

@@ -1,10 +1,15 @@
+import java.io.{BufferedInputStream, FileInputStream}
+import java.nio.file.Paths
+
 import QDecisionPolicyActor._
-import akka.actor.{ActorLogging, Props}
-import akka.persistence._
+import akka.actor.{Actor, ActorLogging, Props}
 import org.platanios.tensorflow.api.core.Shape
 import org.platanios.tensorflow.api.core.client.Session
+import org.platanios.tensorflow.api.learn.hooks.{CheckpointSaver, SummarySaver}
+import org.platanios.tensorflow.api.ops.variables.Saver
 import org.platanios.tensorflow.api.tensors.Tensor
 import org.platanios.tensorflow.api.{Output, tf}
+import org.tensorflow.framework.MetaGraphDef
 
 import scala.util.Random
 
@@ -29,7 +34,7 @@ object QDecisionPolicyActor {
   case object Updated extends DecisionPolicy
 }
 
-class QDecisionPolicyActor extends PersistentActor with ActorLogging {
+class QDecisionPolicyActor extends Actor with ActorLogging {
   private val x: Output[Float] = tf.placeholder[Float](Shape(-1, inputDim))
   private val y: Output[Float] = tf.placeholder[Float](Shape(outputDim))
 
@@ -44,9 +49,7 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
   private val loss = tf.square(y - q)
   private val trainOp = tf.train.AdaGrad(0.01f).minimize(loss)
 
-  override def persistenceId: String = "Q-decision-network-weight"
-
-  override def receiveCommand: Receive = iterateUpdate(initialiseSession(), 0)
+  override def receive: Receive = iterateUpdate(initialiseSession(), 0)
 
   private def iterateUpdate(session: Session, iteration: Long): Receive = {
 
@@ -71,19 +74,6 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
       if(iteration % 500 == 0 && iteration != 0) { saveSnapshot((session, iteration)) }
       sender() ! Updated
       context.become(iterateUpdate(session, iteration + 1))
-
-    case SaveSnapshotSuccess(metadata) =>
-      log.debug("successfully saved snapshot {}, deleting prior snapshots...", metadata)
-      deleteSnapshots(SnapshotSelectionCriteria.create(metadata.sequenceNr, metadata.timestamp - 1))
-    case SaveSnapshotFailure(metadata, reason) =>
-      log.warning(s"saving snapshot $metadata, failed because of $reason")
-  }
-
-  override def receiveRecover: Receive = {
-    case SnapshotOffer(metadata, session) =>
-      log.info(s"Recovered snapshot: $metadata")
-      val recoveredSessionTuple = session.asInstanceOf[(Session, Long)]
-      context.become(iterateUpdate(recoveredSessionTuple._1, recoveredSessionTuple._2))
   }
 
   private def initialiseSession(): Session = {
@@ -97,4 +87,9 @@ class QDecisionPolicyActor extends PersistentActor with ActorLogging {
     val seq = Seq.tabulate(m, n)((i, j) => input(i, j).scalar)
     seq.updated(x , seq(x).updated(y, replacingValue))
   }
+
+  private def saveSnapshot(sessionInfo: (Session, Long)) = {
+
+  }
+
 }

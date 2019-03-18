@@ -28,6 +28,7 @@ object TrainerRouterActor {
 
   sealed trait TrainerData
   case object NotComputed extends TrainerData with TrainerState
+  case class Result(double: Double) extends TrainerData with TrainerState
   case class TrainedData(portfolio: Double) extends TrainerData
 
   case class Died(ref: ActorRef, router: Router)
@@ -95,7 +96,7 @@ class TrainerRouterActor(policyActor: ActorRef, budget: Double, noOfStocks: Int)
 
   private def trainingDataPresent(trainingDataInput: StockDataResponse, router: Router): Receive =
     commonForPrePostTraining(trainingDataInput, None, router) orElse {
-    case GetStd | GetAvg | IsEverythingDone =>
+    case IsEverythingDone =>
       sender() ! NotComputed
     case Terminated(ref) =>
       context.become(trainingDataPresent(trainingDataInput, createNewChildWhenTerminated(ref, router)))
